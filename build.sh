@@ -31,9 +31,9 @@ rm -rf arch/arm64/boot/Image.gz
 rm -rf arch/arm64/boot/Image.gz-dtb
 
 # Export few variables
-export KBUILD_BUILD_USER="AmolAmrit"
-export KBUILD_BUILD_HOST="Nightwing"
-export CROSS_COMPILE=/home/amol/pie/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+export KBUILD_BUILD_USER="abhi"
+export KBUILD_BUILD_HOST="abhiTUF"
+export CROSS_COMPILE=/home/abhi/Documents/AOSP/aex/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
 export ARCH="arm64"
 export USE_CCACHE=1
 
