@@ -44,7 +44,7 @@ echo -e "***********************************************"
 # Finally build it
 make clean && make mrproper
 make lineageos_kenzo_defconfig
-make -j6
+make -j8
 
 echo -e "$yellow***********************************************"
 echo  "                 Zipping up                    "
