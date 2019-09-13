@@ -34,7 +34,7 @@ index 52cf8d3252d..c22918afc14 100644
 +++ b/arch/arm64/configs/lineageos_kenzo_defconfig
 @@ -1,4 +1,4 @@
 -CONFIG_LOCALVERSION="-Escrima-X28-Kamui-LightningBlade-PurpleLightning"
-+CONFIG_LOCALVERSION="-Escrima-X28-Kamui-LightningBlade-PurpleLightning-NewJackFix"
++CONFIG_LOCALVERSION="-Escrima-X28-Kamui-PurpleLightningBlade-NewJackFix"
  CONFIG_SYSVIPC=y
  CONFIG_AUDIT=y
  CONFIG_NO_HZ=y
