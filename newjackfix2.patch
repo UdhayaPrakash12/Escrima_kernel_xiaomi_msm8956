@@ -10,9 +10,9 @@ Subject: [PATCH] newjackfix: Update: Updated blobs
 3. soc-jack.c: Merged commits from shadow kernel
 ---
  arch/arm64/configs/lineageos_kenzo_defconfig |  1 +
- sound/soc/codecs/wcd-mbhc-v2.c               | 21 ++++++++++------
+ sound/soc/codecs/wcd-mbhc-v2.c               | 25 ++++++++++++--------
  sound/soc/soc-jack.c                         |  7 +-----
- 3 files changed, 15 insertions(+), 14 deletions(-)
+ 3 files changed, 17 insertions(+), 16 deletions(-)
 
 diff --git a/arch/arm64/configs/lineageos_kenzo_defconfig b/arch/arm64/configs/lineageos_kenzo_defconfig
 index 43017203ff9..bd5df9df282 100644
@@ -34,6 +34,10 @@ index 6680d469609..ed7fe217e05 100644
  MODULE_PARM_DESC(det_extn_cable_en, "enable/disable extn cable detect");
  
  /* AGNi Audio Jack Testing & Debuging (psndna88@gmail.com) */
+-int hs_detect_plug_time_ms = (1 * 1000);
+-int special_hs_detect_time_ms = (2 * 1000);
++int hs_detect_plug_time_ms = (1 * 500);
++int special_hs_detect_time_ms = (1 * 1000);
  int mbhc_button_press_threshold_min = 250;
  int wcd_fake_removal_min_period_ms = 100;
  int fake_rem_retry_attempts;
