@@ -1,0 +1,360 @@
+diff --git a/Documentation/ABI/testing/sysfs-block-zram b/Documentation/ABI/testing/sysfs-block-zram
+index 451b6d8..3c1945f 100644
+--- a/Documentation/ABI/testing/sysfs-block-zram
++++ b/Documentation/ABI/testing/sysfs-block-zram
+@@ -90,3 +90,13 @@ Description:
+ 		device's debugging info useful for kernel developers. Its
+ 		format is not documented intentionally and may change
+ 		anytime without any notice.
++
++What:		/sys/block/zram<id>/use_dedup
++Date:		March 2017
++Contact:	Joonsoo Kim <iamjoonsoo.kim@lge.com>
++Description:
++		The use_dedup file is read-write and specifies deduplication
++		feature is used or not. If enabled, duplicated data is
++		managed by reference count and will not be stored in memory
++		twice. Benefit of this feature largely depends on the workload
++		so keep attention when use.
+diff --git a/Documentation/blockdev/zram.txt b/Documentation/blockdev/zram.txt
+index 2cdc303..cbbe39b 100644
+--- a/Documentation/blockdev/zram.txt
++++ b/Documentation/blockdev/zram.txt
+@@ -168,6 +168,7 @@ max_comp_streams  RW    the number of possible concurrent compress operations
+ comp_algorithm    RW    show and change the compression algorithm
+ compact           WO    trigger memory compaction
+ debug_stat        RO    this file is used for zram debugging purposes
++use_dedup	  RW	show and set deduplication feature
+ 
+ 
+ User space is advised to use the following files to read the device statistics.
+diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
+index b8ecba6..2f3dd1f 100644
+--- a/drivers/block/zram/Kconfig
++++ b/drivers/block/zram/Kconfig
+@@ -13,3 +13,17 @@ config ZRAM
+ 	  disks and maybe many more.
+ 
+ 	  See zram.txt for more information.
++
++config ZRAM_DEDUP
++	bool "Deduplication support for ZRAM data"
++	depends on ZRAM
++	default n
++	help
++	  Deduplicate ZRAM data to reduce amount of memory consumption.
++	  Advantage largely depends on the workload. In some cases, this
++	  option reduces memory usage to the half. However, if there is no
++	  duplicated data, the amount of memory consumption would be
++	  increased due to additional metadata usage. And, there is
++	  computation time trade-off. Please check the benefit before
++	  enabling this option. Experiment shows the positive effect when
++	  the zram is used as blockdev and is used to store build output.
+diff --git a/drivers/block/zram/Makefile b/drivers/block/zram/Makefile
+index 29cb008..1f6fecd 100644
+--- a/drivers/block/zram/Makefile
++++ b/drivers/block/zram/Makefile
+@@ -1,3 +1,4 @@
+-zram-y	:=	zcomp.o zram_drv.o zram_dedup.o
++zram-y	:=	zcomp.o zram_drv.o
+ 
+-obj-$(CONFIG_ZRAM)	+=	zram.o
++obj-$(CONFIG_ZRAM)		+=	zram.o
++obj-$(CONFIG_ZRAM_DEDUP)	+=	zram_dedup.o
+diff --git a/drivers/block/zram/zram_dedup.c b/drivers/block/zram/zram_dedup.c
+index d313fc8..1df1ce1 100644
+--- a/drivers/block/zram/zram_dedup.c
++++ b/drivers/block/zram/zram_dedup.c
+@@ -27,6 +27,19 @@ u64 zram_dedup_meta_size(struct zram *zram)
+ 	return (u64)atomic64_read(&zram->stats.meta_data_size);
+ }
+ 
++static inline bool zram_dedup_enabled(struct zram_meta *meta)
++{
++	return meta->hash;
++}
++
++unsigned long zram_dedup_handle(struct zram *zram, struct zram_entry *entry)
++{
++	if (!zram_dedup_enabled(zram->meta))
++		return (unsigned long)entry;
++
++	return entry->handle;
++}
++
+ static u32 zram_dedup_checksum(unsigned char *mem)
+ {
+ 	return jhash(mem, PAGE_SIZE, 0);
+@@ -41,6 +54,9 @@ void zram_dedup_insert(struct zram *zram, struct zram_entry *new,
+ 	struct rb_node **rb_node, *parent = NULL;
+ 	struct zram_entry *entry;
+ 
++	if (!zram_dedup_enabled(zram->meta))
++		return;
++
+ 	new->checksum = checksum;
+ 	hash = &meta->hash[checksum % meta->hash_size];
+ 	rb_root = &hash->rb_root;
+@@ -149,6 +165,9 @@ static struct zram_entry *zram_dedup_get(struct zram *zram,
+ struct zram_entry *zram_dedup_find(struct zram *zram, unsigned char *mem,
+ 				u32 *checksum)
+ {
++	if (!zram_dedup_enabled(zram->meta))
++		return NULL;
++
+ 	*checksum = zram_dedup_checksum(mem);
+ 
+ 	return zram_dedup_get(zram, mem, *checksum);
+@@ -160,6 +179,9 @@ struct zram_entry *zram_dedup_alloc(struct zram *zram,
+ {
+ 	struct zram_entry *entry;
+ 
++	if (!zram_dedup_enabled(zram->meta))
++		return (struct zram_entry *)handle;
++
+ 	entry = kzalloc(sizeof(*entry),
+ 			flags & ~(__GFP_HIGHMEM|__GFP_MOVABLE));
+ 	if (!entry)
+@@ -180,6 +202,9 @@ unsigned long zram_dedup_free(struct zram *zram, struct zram_meta *meta,
+ {
+ 	unsigned long handle;
+ 
++	if (!zram_dedup_enabled(meta))
++		return (unsigned long)entry;
++
+ 	if (zram_dedup_put(zram, meta, entry))
+ 		return 0;
+ 
+@@ -193,11 +218,14 @@ unsigned long zram_dedup_free(struct zram *zram, struct zram_meta *meta,
+ 	return handle;
+ }
+ 
+-int zram_dedup_init(struct zram_meta *meta, size_t num_pages)
++int zram_dedup_init(struct zram *zram, struct zram_meta *meta, size_t num_pages)
+ {
+ 	int i;
+ 	struct zram_hash *hash;
+ 
++	if (!zram->use_dedup)
++		return 0;
++
+ 	meta->hash_size = num_pages >> ZRAM_HASH_SHIFT;
+ 	meta->hash_size = min_t(size_t, ZRAM_HASH_SIZE_MAX, meta->hash_size);
+ 	meta->hash_size = max_t(size_t, ZRAM_HASH_SIZE_MIN, meta->hash_size);
+@@ -219,4 +247,5 @@ int zram_dedup_init(struct zram_meta *meta, size_t num_pages)
+ void zram_dedup_fini(struct zram_meta *meta)
+ {
+ 	vfree(meta->hash);
++	meta->hash = NULL;
+ }
+diff --git a/drivers/block/zram/zram_dedup.h b/drivers/block/zram/zram_dedup.h
+index 7071f32..470009a 100644
+--- a/drivers/block/zram/zram_dedup.h
++++ b/drivers/block/zram/zram_dedup.h
+@@ -5,9 +5,11 @@ struct zram;
+ struct zram_meta;
+ struct zram_entry;
+ 
++#ifdef CONFIG_ZRAM_DEDUP
+ u64 zram_dedup_dup_size(struct zram *zram);
+ u64 zram_dedup_meta_size(struct zram *zram);
+ 
++unsigned long zram_dedup_handle(struct zram *zram, struct zram_entry *entry);
+ void zram_dedup_insert(struct zram *zram, struct zram_entry *new,
+ 				u32 checksum);
+ struct zram_entry *zram_dedup_find(struct zram *zram, unsigned char *mem,
+@@ -19,7 +21,36 @@ struct zram_entry *zram_dedup_alloc(struct zram *zram,
+ unsigned long zram_dedup_free(struct zram *zram, struct zram_meta *meta,
+ 				struct zram_entry *entry);
+ 
+-int zram_dedup_init(struct zram_meta *meta, size_t num_pages);
++int zram_dedup_init(struct zram *zram, struct zram_meta *meta,
++				size_t num_pages);
+ void zram_dedup_fini(struct zram_meta *meta);
++#else
++
++static inline u64 zram_dedup_dup_size(struct zram *zram) { return 0; }
++static inline u64 zram_dedup_meta_size(struct zram *zram) { return 0; }
++
++static inline unsigned long zram_dedup_handle(struct zram *zram,
++		struct zram_entry *entry) { return (unsigned long)entry; }
++static inline void zram_dedup_insert(struct zram *zram, struct zram_entry *new,
++		u32 checksum) { }
++static inline struct zram_entry *zram_dedup_find(struct zram *zram,
++		unsigned char *mem, u32 *checksum) { return NULL; }
++
++static inline struct zram_entry *zram_dedup_alloc(struct zram *zram,
++		unsigned long handle, unsigned int len, gfp_t flags)
++{
++	return (struct zram_entry *)handle;
++}
++static inline unsigned long zram_dedup_free(struct zram *zram,
++		struct zram_meta *meta, struct zram_entry *entry)
++{
++	return (unsigned long)entry;
++}
++
++static inline int zram_dedup_init(struct zram *zram, struct zram_meta *meta,
++		size_t num_pages) { return 0; }
++void zram_dedup_fini(struct zram_meta *meta) { }
++
++#endif
+ 
+ #endif /* _ZRAM_DEDUP_H_ */
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 15cecd6..016b2ee 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -327,6 +327,43 @@ static ssize_t comp_algorithm_store(struct device *dev,
+ 	return len;
+ }
+ 
++static ssize_t use_dedup_show(struct device *dev,
++		struct device_attribute *attr, char *buf)
++{
++	bool val;
++	struct zram *zram = dev_to_zram(dev);
++
++	down_read(&zram->init_lock);
++	val = zram->use_dedup;
++	up_read(&zram->init_lock);
++
++	return scnprintf(buf, PAGE_SIZE, "%d\n", (int)val);
++}
++
++static ssize_t use_dedup_store(struct device *dev,
++		struct device_attribute *attr, const char *buf, size_t len)
++{
++#ifdef CONFIG_ZRAM_DEDUP
++	int val;
++	struct zram *zram = dev_to_zram(dev);
++
++	if (kstrtoint(buf, 10, &val) || (val != 0 && val != 1))
++		return -EINVAL;
++
++	down_write(&zram->init_lock);
++	if (init_done(zram)) {
++		up_write(&zram->init_lock);
++		pr_info("Can't change dedup usage for initialized device\n");
++		return -EBUSY;
++	}
++	zram->use_dedup = val;
++	up_write(&zram->init_lock);
++	return len;
++#else
++	return -EINVAL;
++#endif
++}
++
+ static ssize_t compact_store(struct device *dev,
+ 		struct device_attribute *attr, const char *buf, size_t len)
+ {
+@@ -421,6 +458,12 @@ static DEVICE_ATTR_RO(io_stat);
+ static DEVICE_ATTR_RO(mm_stat);
+ static DEVICE_ATTR_RO(debug_stat);
+ 
++static unsigned long zram_entry_handle(struct zram *zram,
++				struct zram_entry *entry)
++{
++	return zram_dedup_handle(zram, entry);
++}
++
+ static struct zram_entry *zram_entry_alloc(struct zram *zram,
+ 					unsigned int len, gfp_t flags)
+ {
+@@ -475,9 +518,10 @@ static void zram_meta_free(struct zram_meta *meta, u64 disksize)
+ 	kfree(meta);
+ }
+ 
+-static struct zram_meta *zram_meta_alloc(char *pool_name, u64 disksize)
++static struct zram_meta *zram_meta_alloc(struct zram *zram, u64 disksize)
+ {
+ 	size_t num_pages;
++	char *pool_name = zram->disk->disk_name;
+ 	struct zram_meta *meta = kzalloc(sizeof(*meta), GFP_KERNEL);
+ 
+ 	if (!meta)
+@@ -490,7 +534,7 @@ static struct zram_meta *zram_meta_alloc(char *pool_name, u64 disksize)
+ 		goto out_error;
+ 	}
+ 
+-	if (zram_dedup_init(meta, num_pages)) {
++	if (zram_dedup_init(zram, meta, num_pages)) {
+ 		pr_err("Error initializing zram entry hash\n");
+ 		goto out_error;
+ 	}
+@@ -562,7 +606,8 @@ static int zram_decompress_page(struct zram *zram, char *mem, u32 index)
+ 		return 0;
+ 	}
+ 
+-	cmem = zs_map_object(meta->mem_pool, entry->handle, ZS_MM_RO);
++	cmem = zs_map_object(meta->mem_pool,
++			zram_entry_handle(zram, entry), ZS_MM_RO);
+ 	if (size == PAGE_SIZE) {
+ 		copy_page(mem, cmem);
+ 	} else {
+@@ -571,7 +616,7 @@ static int zram_decompress_page(struct zram *zram, char *mem, u32 index)
+ 		ret = zcomp_decompress(zstrm, cmem, size, mem);
+ 		zcomp_stream_put(zram->comp);
+ 	}
+-	zs_unmap_object(meta->mem_pool, entry->handle);
++	zs_unmap_object(meta->mem_pool, zram_entry_handle(zram, entry));
+ 	bit_spin_unlock(ZRAM_ACCESS, &meta->table[index].value);
+ 
+ 	/* Should NEVER happen. Return bio error if it does. */
+@@ -771,7 +816,8 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec, u32 index,
+ 		goto out;
+ 	}
+ 
+-	cmem = zs_map_object(meta->mem_pool, entry->handle, ZS_MM_WO);
++	cmem = zs_map_object(meta->mem_pool,
++			zram_entry_handle(zram, entry), ZS_MM_WO);
+ 
+ 	if ((clen == PAGE_SIZE) && !is_partial_io(bvec)) {
+ 		src = kmap_atomic(page);
+@@ -783,7 +829,7 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec, u32 index,
+ 
+ 	zcomp_stream_put(zram->comp);
+ 	zstrm = NULL;
+-	zs_unmap_object(meta->mem_pool, entry->handle);
++	zs_unmap_object(meta->mem_pool, zram_entry_handle(zram, entry));
+ 	zram_dedup_insert(zram, entry, checksum);
+ 
+ found_dup:
+@@ -1055,7 +1101,7 @@ static ssize_t disksize_store(struct device *dev,
+ 		return -EINVAL;
+ 
+ 	disksize = PAGE_ALIGN(disksize);
+-	meta = zram_meta_alloc(zram->disk->disk_name, disksize);
++	meta = zram_meta_alloc(zram, disksize);
+ 	if (!meta)
+ 		return -ENOMEM;
+ 
+@@ -1166,6 +1212,7 @@ static DEVICE_ATTR_WO(mem_limit);
+ static DEVICE_ATTR_WO(mem_used_max);
+ static DEVICE_ATTR_RW(max_comp_streams);
+ static DEVICE_ATTR_RW(comp_algorithm);
++static DEVICE_ATTR_RW(use_dedup);
+ 
+ static struct attribute *zram_disk_attrs[] = {
+ 	&dev_attr_disksize.attr,
+@@ -1176,6 +1223,7 @@ static struct attribute *zram_disk_attrs[] = {
+ 	&dev_attr_mem_used_max.attr,
+ 	&dev_attr_max_comp_streams.attr,
+ 	&dev_attr_comp_algorithm.attr,
++	&dev_attr_use_dedup.attr,
+ 	&dev_attr_io_stat.attr,
+ 	&dev_attr_mm_stat.attr,
+ 	&dev_attr_debug_stat.attr,
+diff --git a/drivers/block/zram/zram_drv.h b/drivers/block/zram/zram_drv.h
+index 968e269..53be62a 100644
+--- a/drivers/block/zram/zram_drv.h
++++ b/drivers/block/zram/zram_drv.h
+@@ -138,6 +138,7 @@ struct zram {
+ 	 * zram is claimed so open request will be failed
+ 	 */
+ 	bool claim; /* Protected by bdev->bd_mutex */
++	bool use_dedup;
+ };
+ 
+ void zram_entry_free(struct zram *zram, struct zram_meta *meta,
